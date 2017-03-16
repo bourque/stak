@@ -1,3 +1,5 @@
+:orphan:
+
 
 images.imgeom
 =============
@@ -10,8 +12,6 @@ Notes
 
 .. figure:: static/150pxblueconstuc.png
    :alt: Work in progress
-
-   blueConstuct
 
 **General Note about this package:**
 

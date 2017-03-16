@@ -1,19 +1,12 @@
-""" hselect
-algorithm outline:
-translate inputs, get filelist
+"""
+Hselect class, use to collate FITS header information
 
-keep track of keywords/values for final table in dict
-loop through files, and request extensions, dict key name will be filename-ext#
-check for reg-exp matches (have list of request keywords)
-store keyword/values in dictionary (an inner dictionary)
-if dictionary is empty at the end, delete the entry
-
-when have all values, make masked numpy arrays, port into astropy table
 """
 
 # STDLIB
 from six import iteritems, string_types
 import operator
+import argparse
 import pyparsing as pyp
 
 # THIRD-PARTY
@@ -23,122 +16,178 @@ from astropy.io import fits
 from astropy.table import Table
 
 
-__all__ = ['Hselect', 'wildcard_matches', 'to_number']
+__all__ = ['Hselect']
 
 
 class Hselect(object):
-    """hselect IRAF replacement.  Will ideally contain full functionality of IRAF version.
+    """Hselect is a hselect IRAF replacement.  You can use Hselect on a
+    collection of FITS files to pull out selected header keywords and save
+    them to an astropy table.  You can also pre-filter the table results using
+    an assertion expression on the keyword values.
 
-    EXAMPLE:
-    > myObj = Hselect("jcz*","BUNIT,TIME-OBS",extension="0,1,2,3",expr="BUNIT='ELECTRONS'")
-    > myObj.table
+    Parameters
+    ----------
+    filename_list : string or iterable
+        String of filename(s), comma separated. Can also provide an iterable
+        with individual filename strings. Can use wildcards and IRAF file
+        syntax. ex: "file1.fits,file2.fits" or ("file1.fits","file2.fits")
 
+    keywords : string
+        String of comma separated keywords to search for in headers, Can use
+        the `*` wildcard character. ex: "DATE-OBS, NAXIS*"
+
+    extension : tuple, optional
+        Tuple of requested header extensions to search. Default is empty tuple,
+        which will search all header extensions.
+
+    expression : string, optional
+        Assertion expression to evaluate keyword values for inclusion in final
+        table.  This can include combination of expressions using "AND" and
+        "OR" (not case sensitive), and each evaluation can be one of the set
+        (=,>=,<=,>,<).  Can use parenthesis to denote order of evaluation.
+        ex: "BUNIT='ELECTRONS' OR BUNIT='ELECTRONS/SECOND'")
+
+
+    Attributes
+    ----------
+    table : Astropy Table
+        The Astropy Table that stores the header search results.  If a
+        searched header does not contain the desired header keyword, that
+        value will be masked in the output Table, denoted by a '-'.
+
+    Examples
+    --------
+    ::
+
+        $ myObj = Hselect("*.fits","BUNIT,TIME-OBS",extension=(0,1,2,3),
+                          expression="BUNIT='ELECTRONS'")
+
+        $ myObj = Hselect("jcz8*raw.fits","BUNIT,TIME-OBS",
+                          expression="BUNIT='ELECTRONS' AND
+                          (TIME-OBS < 10 OR TIME-OBS > 100")
     """
 
-    def __init__(self, filename_list, keyword_list, extension='all', expr="None"):
+    def __init__(self, filename_list, keywords, extension=(),
+                 expression="None"):
         """
         set initial parameters, call class functions for preforming selection
         and formatting to masked astropy table.
+
         """
 
         self.filename_list = parseinput.parseinput(filename_list)[0]
         self.final_key_dict = {}
-        self.keyword_list = keyword_list.split(",")
-        self.final_key_set = set()
+        self.keyword_list = keywords.split(",")
+        self.keyword_types = dict()
+
+        if not isinstance(extension, tuple):
+            raise ValueError("extension parameter must be a tuple")
         self.extension = extension
-        self.expr = expr
+        if self.extension == ():
+            self.all_ext = True
+        else:
+            self.all_ext = False
+
+        self.expr = expression
         self.table = Table()
 
-        self.select()
-        self.__dict_to_table()
+        self._select()
+        self._dict_to_table()
 
-    def select(self):
+    def _select(self):
+        """Perform hselect like query on provided file names, inputs were
+        setup in init, and output is stored in self.final_key_dict
         """
-        Perform hselect like query on provided file names, inputs were setup in init, and output is
-        stored in self.final_key_dict
-
-        """
-
-        if self.extension != 'all':
-            try:
-                ext_list = [int(x) for x in self.extension.split(",")]
-            except ValueError:
-                print("Incorrect syntax for extension list, must all be integers: {}".format(self.extension))
 
         # loop through all files, find requested keywords
         for filename in self.filename_list:
-            try:
-                hdulist = fits.open(filename)
-            except IOError:
-                print("couldn't open file {}".format(filename))
+            with fits.open(filename) as hdulist:
 
-            if self.extension == 'all':
-                ext_list = range(len(hdulist))
+                if self.all_ext:
+                    self.extension = range(len(hdulist))
 
-            for ext in ext_list:
-                header = hdulist[ext].header
-                outer_key = '{}-{}'.format(filename, ext)
+                for ext in self.extension:
 
-                # check for expressions, will not make dictionary entry if expression false
-                # would be nice to use interpreter pattern here for more advanced expressions,
-                # but for now I'll stick with just 'AND's. check is expr is valid only once,
-                # earlier in code.
+                    try:
+                        header = hdulist[ext].header
+                    except IndexError:
+                        continue
+                    outer_key = '{}-{}'.format(filename, ext)
 
-                if self.expr != "None" and not depth_parse(expr_pyparse(self.expr), header):
-                    continue
+                    # check for expressions, will not make dictionary entry if
+                    # expression false would be nice to use interpreter
+                    # pattern here for more advanced expressions, but for now
+                    # I'll stick with just 'AND's. check is expr is valid only
+                    # once, earlier in code.
 
-                self.final_key_dict[outer_key] = {}
+                    if self.expr != "None" and not depth_parse(
+                            expr_pyparse(self.expr), header):
+                        continue
 
-                for search_keyword in self.keyword_list:
-                    # have to do regular expression matching for keywords
-                    if '*' in search_keyword:
-                        matches = wildcard_matches(header, search_keyword)
-                        for match in matches:
-                            self.final_key_dict[outer_key][match], data_type = to_number(header[match])
-                            self.final_key_set.add((match, data_type))
+                    self.final_key_dict[outer_key] = {}
 
-                    else:
-                        if search_keyword in header:
-                            self.final_key_dict[outer_key][search_keyword], data_type = \
-                                to_number(header[search_keyword])
-                            self.final_key_set.add((search_keyword, data_type))
+                    for search_keyword in self.keyword_list:
 
-                if not self.final_key_dict[outer_key]:
-                    del self.final_key_dict[outer_key]
+                        mini_key_list = []
 
-            hdulist.close()
+                        # Have to do regular expression matching for keywords
+                        if '*' in search_keyword:
+                            matches = wildcard_matches(header, search_keyword)
+                            mini_key_list += matches
+                        elif search_keyword in header:
+                            mini_key_list.append(search_keyword)
 
-    def __dict_to_table(self):
-        """Format the final dictionary of keyword matches into a masked astropy table.
-        Right now only taking data types of float and str.
+                        for foundk in mini_key_list:
+                            # If duplicate differently typed keywords are
+                            # found, change type to str
+                            if foundk not in self.keyword_types:
+                                self.keyword_types[foundk] = \
+                                    type(header[foundk])
+
+                            elif foundk in self.keyword_types and \
+                                    not isinstance(header[foundk],
+                                                   self.keyword_types[foundk]):
+                                self.keyword_types[foundk] = str
+
+                            self.final_key_dict[outer_key][foundk] = \
+                                header[foundk]
+
+                    # Check for empty file-ext entry and delete entry if
+                    # found.
+                    if not self.final_key_dict[outer_key]:
+                        del self.final_key_dict[outer_key]
+
+    def _dict_to_table(self):
+        """Format the final dictionary of keyword matches into a masked
+        astropy table.
 
         """
 
-        # need to setup all numpy arrays first, then put into table, adding columns is apparently slow
+        # need to setup all numpy arrays first, then put into table, adding
+        # columns is apparently slow
         file_ext_list = self.final_key_dict.keys()
         num_rows = len(file_ext_list)
-        final_keyword_list = list(self.final_key_set)
 
         array_list = [[elem.split('-')[0] for elem in file_ext_list],
                       [int(elem.split('-')[1]) for elem in file_ext_list]]
-        col_names = ['Filename', 'ExtNumber']
+        col_names = ['Filename', 'Ext']
         data_types = ['S80', int]
         # the bool mask array list will be off by index of 2
         mask_list = []
         dumb_indx_dict = {}
 
         # make initial empty data and bool arrays
-        for indx, key_tuple in enumerate(final_keyword_list):
+        for indx, key in enumerate(self.keyword_types):
             # make dumb keyword index dict, probably a better way to do this
-            dumb_indx_dict[key_tuple[0]] = indx
-            if key_tuple[1] == str:
+            dumb_indx_dict[key] = indx
+            if self.keyword_types[key] == str:
                 data_type = 'S68'
             else:
-                data_type = float
+                data_type = self.keyword_types[key]
 
             array_list.append(np.zeros(num_rows, dtype=data_type))
             mask_list.append(np.ones(num_rows, dtype=bool))
-            col_names.append(key_tuple[0])
+            col_names.append(key)
             data_types.append(data_type)
 
         # now fill in arrays and mask arrays
@@ -153,7 +202,9 @@ class Hselect(object):
             array_list[indx+2] = np.ma.array(array_list[indx+2], mask=mask_arr)
 
         # put everything into an astropy table
-        self.table = Table(array_list, names=tuple(col_names), dtype=tuple(data_types))
+        self.table = Table(array_list, names=tuple(col_names),
+                           dtype=tuple(data_types))
+        self.table.sort(['Filename', 'Ext'])
 
 
 def eval_keyword_expr(list_expr, header):
@@ -175,26 +226,34 @@ def eval_keyword_expr(list_expr, header):
 
     """
 
-    operator_dict = {'=': operator.eq, '<': operator.lt, '<=': operator.le, '>': operator.gt, '>=': operator.ge}
+    operator_dict = {'=': operator.eq, '<': operator.lt, '<=': operator.le,
+                     '>': operator.gt, '>=': operator.ge}
 
     if len(list_expr) == 3:
-        check_function = operator_dict[list_expr[1]]
+        eval_function = operator_dict[list_expr[1]]
 
-        #check for keyword
+        # check for keyword
         if list_expr[0] not in header.keys():
             return False
 
-        #now check condition
-        right_side, _ = to_number(list_expr[2])
-        return check_function(header[list_expr[0]], right_side)
+        # turn value to float if not string, if string strip extra quotes
+        if list_expr[2][0] == '"' and list_expr[2][-1] == '"':
+            right_side = list_expr[2].lstrip('"').rstrip('"')
+        elif list_expr[2][0] == "'" and list_expr[2][-1] == "'":
+            right_side = list_expr[2].lstrip("'").rstrip("'")
+        else:
+            right_side = float(list_expr[2])
+
+        # now check condition
+        return eval_function(header[list_expr[0]], right_side)
     else:
-        #should add exception catching here
+        # should add exception catching here
         return False
 
 
 def wildcard_matches(header, wildcard_key):
-    """Take wildcard keyword and return all keyword name matches found in header.
-    Throwing out COMMENT and HISTORY cards.
+    """Take wildcard keyword and return all keyword name matches found in
+    header. Throwing out COMMENT and HISTORY cards.
 
     Parameters
     ----------
@@ -207,24 +266,28 @@ def wildcard_matches(header, wildcard_key):
     matches : list
     """
 
-    header_keys = header.keys()
-    if 'COMMENT' in header_keys:
-        header_keys.remove('COMMENT')
-    if 'HISTORY' in header_keys:
-        header_keys.remove('HISTORY')
     matches = header[wildcard_key].keys()
+    while 'COMMENT' in matches:
+        matches.remove('COMMENT')
+    while 'HISTORY' in matches:
+        matches.remove('HISTORY')
+
+    # Have to remove blank section headers
+    while '' in matches:
+        matches.remove('')
+
     return matches
 
 
 def expr_pyparse(full_expr):
     """
-    Run the full string evaluation expression through initial parsing.  This should
-    be some combination of AND,ORs using appropriate parenthesis, and the evaluation
-    statement should looks like so: KEYWORD = "value" for strings, KEYWORD = value for
-    integer/float values.  Example of full expression:
-    "(BUNIT = 'UNITLESS' and NAXIS1 = 1014) OR BUNIT='ELECTRONS/S'"
-    Can use lower or upper case for or/and argument, and spaces around operators not
-    required.
+    Run the full string evaluation expression through initial parsing.
+    This should be some combination of AND,ORs using appropriate parenthesis,
+    and the evaluation statement should looks like so: KEYWORD = "value" for
+    strings, KEYWORD = value for integer/float values.  Example of full
+    expression: "(BUNIT = 'UNITLESS' and NAXIS1 = 1014) OR BUNIT='ELECTRONS/S'"
+    Can use lower or upper case for or/and argument, and spaces around
+    operators not required.
 
     Parameters
     ----------
@@ -242,14 +305,13 @@ def expr_pyparse(full_expr):
     and_ = pyp.CaselessLiteral('and')
     or_ = pyp.CaselessLiteral('or')
     keyword = pyp.Word(pyp.alphanums+'_'+'-')
-    value = (pyp.Word(pyp.nums + '.') | pyp.quotedString.setParseAction(pyp.removeQuotes))
+    value = (pyp.Word(pyp.nums + '.') | pyp.Word(pyp.alphanums + "'" + '"'))
     expr = pyp.Word('=<>')
 
     searchTerm = pyp.Group(keyword + expr + value)
     searchExpr = pyp.operatorPrecedence(searchTerm,
-                                     [(and_, 2, pyp.opAssoc.LEFT),
-                                      (or_, 2, pyp.opAssoc.LEFT),
-                                     ])
+                                        [(and_, 2, pyp.opAssoc.LEFT),
+                                         (or_, 2, pyp.opAssoc.LEFT)])
     # change this to catch exception, this is most likely where parsing
     # exception will happen from bad user input
     return searchExpr.parseString(full_expr, parseAll=True).asList()
@@ -272,41 +334,78 @@ def depth_parse(input_list, header):
     """
 
     bool_dict = {'and': operator.and_, 'or': operator.or_}
-    
-    if isinstance(input_list, list):
-        # first pass from pyparse output will be single element list
-        if len(input_list) == 1:
-            return depth_parse(input_list[0], header)
-        # list should have three elements, if inner elements also list, use boolean parsing
-        elif (len(input_list) == 3) and (isinstance(input_list[0], list)):
-            bool_func = bool_dict[input_list[1]]
-            result = bool_func(depth_parse(input_list[0], header), depth_parse(input_list[2], header))
-            return result
-        # list should have three elements, if inner elements strings, use keyword evaluation
-        elif (len(input_list) == 3) and (isinstance(input_list[0], string_types)):
-            return eval_keyword_expr(input_list, header)
-        else:
-            # change this to exception
-            print("no deconstruction match found for list: {}".format(input_list))
+
+    # first pass from pyparse output will be single element list
+    if len(input_list) == 1:
+        return depth_parse(input_list[0], header)
+    # list should have three elements, if inner elements also list, use boolean
+    # parsing
+    elif (len(input_list) == 3) and (isinstance(input_list[0], list)):
+        bool_func = bool_dict[input_list[1]]
+        result = bool_func(depth_parse(input_list[0], header),
+                           depth_parse(input_list[2], header))
+        return result
+    # list should have three elements, if inner elements strings, use keyword
+    # evaluation
+    elif (len(input_list) == 3) and (isinstance(input_list[0], string_types)):
+        return eval_keyword_expr(input_list, header)
     else:
-        # change this to exception
-        print("wrong input type, need list")
+        raise ValueError("no deconstruction match found for list: {}".format(
+            input_list))
 
 
-def to_number(s):
-    """Take string, change to float if possible, otherwise return string unchanged.
+def main(args=None):
 
-    Parameters
-    ----------
-    s : str
-
-    Returns
-    -------
-    s : str or float
-    """
+    parser = argparse.ArgumentParser(description='''Select and print FITS
+    header keywords to the screen. Works like IRAF Hselect.''',
+                                     epilog='''Examples:
+        $hselect hselect *.fits BUNIT,TIME-OBS
+        $hselect file1.fits NAXIS1 -e 1,2 -x 'NAXIS1=1014 AND BUNIT="SECONDS"' ''',
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('filename', nargs='+', help='''Name(s) of FITS files to
+        search. Arguments can be multiple white-space separated filenames.
+        Wildcard characters and IRAF filename syntax is accepted.''')
+    parser.add_argument('keywords', help='''Requested keyword(s) for output
+        table, comma separated, no spaces. The '*' wildcard is also accepted.''')
+    parser.add_argument('-e', '--ext', help='''Extension number(s) to search,
+        comma separated, no white-space. Defaults to all.''')
+    parser.add_argument('-x', '--expression', help='''Assertion expression to
+        run on the output table, The expression can be defined using
+        =,>,<,>=,<= operators in a "keyword operator value" combination. These
+        inner expressions can then be combined using AND/OR
+        (case insensitive). Enclose your full expression in quotes, and any
+        string values in the alternate quote style ` or ". If necessary, use
+        parenthesis to notate order of evaluation.''')
 
     try:
-        s = float(s)
-        return s, float
-    except ValueError:
-        return s, str
+        parsed = parser.parse_args()
+
+        if parsed.ext:
+            extension_list = parsed.ext.split(',')
+            # attempt to change input extensions names to ints
+            for i, elem in enumerate(extension_list):
+                try:
+                    extension_list[i] = int(elem)
+                except ValueError:
+                    continue
+
+        if parsed.ext and parsed.expression:
+            hsel = Hselect(parsed.filename, parsed.keywords,
+                           extension=tuple(extension_list),
+                           expression=parsed.expression)
+
+        elif parsed.ext and not parsed.expression:
+            hsel = Hselect(parsed.filename, parsed.keywords,
+                           extension=tuple(extension_list))
+
+        elif not parsed.ext and parsed.expression:
+            hsel = Hselect(parsed.filename, parsed.keywords,
+                           expression=parsed.expression)
+
+        else:
+            hsel = Hselect(parsed.filename, parsed.keywords)
+
+        print(hsel.table)
+
+    except SystemExit:
+        pass

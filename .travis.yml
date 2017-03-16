@@ -25,7 +25,7 @@ env:
         # The following versions are the 'default' for tests, unless
         # overridden underneath. They are defined here in order to save having
         # to repeat them for all configurations.
-        - NUMPY_VERSION=stable
+        - NUMPY_VERSION=1.11
         - ASTROPY_VERSION=stable
         - SETUP_CMD='test'
         - PIP_DEPENDENCIES=''
@@ -34,6 +34,7 @@ env:
         # so Cython is required for testing. If your package does not include
         # Cython code, you can set CONDA_DEPENDENCIES=''
         - CONDA_DEPENDENCIES='Cython six stsci-hst'
+        - CONDA_SPHINX_DEPENDENCIES='Cython six stsci-hst nbconvert'
 
         # Conda packages for affiliated packages are hosted in channel
         # "astropy" while builds for astropy LTS with recent numpy versions
@@ -60,6 +61,7 @@ matrix:
         # may run for a long time
         - python: 2.7
           env: SETUP_CMD='build_sphinx'
+               CONDA_DEPENDENCIES=$CONDA_SPHINX_DEPENDENCIES
 
         # Try Astropy development version
         - python: 2.7

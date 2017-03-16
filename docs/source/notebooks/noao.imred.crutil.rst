@@ -1,3 +1,5 @@
+:orphan:
+
 
 noao.imred.crutil
 =================
@@ -10,8 +12,6 @@ Notes
 
 .. figure:: static/150pxblueconstuc.png
    :alt: Work in progress
-
-   blueConstuct
 
 Contents:
 
@@ -30,8 +30,6 @@ cosmicrays
 .. figure:: static/150pxblueconstuc.png
    :alt: Work in progress
 
-   blueConstuct
-
 
 
 craverage
@@ -40,8 +38,6 @@ craverage
 .. figure:: static/150pxblueconstuc.png
    :alt: Work in progress
 
-   blueConstuct
-
 
 
 crfix
@@ -49,8 +45,6 @@ crfix
 
 .. figure:: static/150pxblueconstuc.png
    :alt: Work in progress
-
-   blueConstuct
 
 
 
@@ -143,8 +137,6 @@ crnebula
 
 .. figure:: static/150pxblueconstuc.png
    :alt: Work in progress
-
-   blueConstuct
 
 
 
